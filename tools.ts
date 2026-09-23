@@ -8,7 +8,7 @@ const CONTACTS_TOOL: Tool = {
       properties: {
         name: {
           type: "string",
-          description: "Name to search for (optional - if not provided, returns all contacts). Can be partial name to search."
+          description: "Name to search for (optional - if not provided, returns all contacts with phone numbers). Can be a partial name. Matches return phone numbers and email addresses."
         }
       }
     }
@@ -39,7 +39,7 @@ const CONTACTS_TOOL: Tool = {
         },
         folderName: {
           type: "string",
-          description: "Name of the folder to create the note in (optional for create operation, defaults to 'Claude')"
+          description: "Name of an existing folder to create the note in (optional for create operation, defaults to 'Claude', which is created if missing)"
         }
       },
       required: ["operation"]
@@ -91,11 +91,11 @@ const CONTACTS_TOOL: Tool = {
         },
         account: {
           type: "string",
-          description: "Email account to use (optional - if not provided, searches across all accounts)"
+          description: "Email account name to use (optional - if not provided, uses every account's inbox). Get names from the 'accounts' operation."
         },
         mailbox: {
           type: "string",
-          description: "Mailbox to use (optional - if not provided, uses inbox or searches across all mailboxes)"
+          description: "Mailbox name within the account (optional - defaults to the inbox)"
         },
         limit: {
           type: "number",
@@ -103,7 +103,7 @@ const CONTACTS_TOOL: Tool = {
         },
         searchTerm: {
           type: "string",
-          description: "Text to search for in emails (required for search operation)"
+          description: "Text to search for in email subjects and senders (required for search operation)"
         },
         to: {
           type: "string",
@@ -151,7 +151,7 @@ const CONTACTS_TOOL: Tool = {
         },
         listName: {
           type: "string",
-          description: "Name of the list to create the reminder in (optional for create operation)"
+          description: "Name of an existing list: the list to create the reminder in (optional for create, defaults to the default list) or to filter the list operation by"
         },
         listId: {
           type: "string",
@@ -170,7 +170,7 @@ const CONTACTS_TOOL: Tool = {
         },
         dueDate: {
           type: "string",
-          description: "Due date for the reminder in ISO format (optional for create operation)"
+          description: "Due date for the reminder in ISO 8601 format with offset, e.g. 2026-10-01T09:00:00+02:00 (optional for create operation)"
         }
       },
       required: ["operation"]
@@ -195,7 +195,7 @@ const CALENDAR_TOOL: Tool = {
       },
       eventId: {
         type: "string",
-        description: "ID of the event to open (required for open operation)"
+        description: "ID of the event to open, as returned by list/search/create (required for open operation)"
       },
       limit: {
         type: "number",
@@ -235,7 +235,7 @@ const CALENDAR_TOOL: Tool = {
       },
       calendarName: {
         type: "string",
-        description: "Name of the calendar to create the event in (optional for create operation, uses default calendar if not specified)"
+        description: "Calendar name. For create: calendar to create the event in (defaults to the first writable 'Calendar'). For list, search and open: restrict to this calendar, which is much faster when Calendar is read through scripting."
       }
     },
     required: ["operation"]
@@ -271,7 +271,7 @@ const MAPS_TOOL: Tool = {
       },
       fromAddress: {
         type: "string",
-        description: "Starting address for directions (required for directions)"
+        description: "Starting address or place name for directions (required for directions)"
       },
       toAddress: {
         type: "string",

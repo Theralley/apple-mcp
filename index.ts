@@ -5,7 +5,6 @@ import {
 	CallToolRequestSchema,
 	ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { runAppleScript } from "run-applescript";
 import tools from "./tools";
 
 
@@ -214,13 +213,17 @@ function initServer() {
 						const contactsModule = await loadModule("contacts");
 
 						if (args.name) {
-							const numbers = await contactsModule.findNumber(args.name);
+							const matches = await contactsModule.searchContacts(args.name);
 							return {
 								content: [
 									{
 										type: "text",
-										text: numbers.length
-											? `${args.name}: ${numbers.join(", ")}`
+										text: matches.length
+											? matches
+													.map((c) =>
+														[c.name, ...c.phones, ...c.emails].join(", ").replace(", ", ": "),
+													)
+													.join("\n")
 											: `No contact found for "${args.name}". Try a different name or use no name parameter to list all contacts.`,
 									},
 								],
@@ -297,7 +300,7 @@ function initServer() {
 											type: "text",
 											text: foundNotes.length
 												? foundNotes
-														.map((note) => `${note.name}:\n${note.content}`)
+														.map(formatNote)
 														.join("\n\n")
 												: `No notes found for "${args.searchText}"`,
 										},
@@ -314,7 +317,7 @@ function initServer() {
 											type: "text",
 											text: allNotes.length
 												? allNotes
-														.map((note) => `${note.name}:\n${note.content}`)
+														.map(formatNote)
 														.join("\n\n")
 												: "No notes exist.",
 										},
@@ -341,7 +344,7 @@ function initServer() {
 										{
 											type: "text",
 											text: result.success
-												? `Created note "${args.title}" in folder "${result.folderName}"${result.usedDefaultFolder ? " (created new folder)" : ""}.`
+												? `Created note "${args.title}" in folder "${result.folderName}"${result.usedDefaultFolder ? " (created new folder)" : ""}.\nNote ID: ${result.note?.id}`
 												: `Failed to create note: ${result.message}`,
 										},
 									],
@@ -516,143 +519,11 @@ function initServer() {
 
 						switch (args.operation) {
 							case "unread": {
-								// If an account is specified, we'll try to search specifically in that account
-								let emails;
-								if (args.account) {
-									console.error(
-										`Getting unread emails for account: ${args.account}`,
-									);
-									// Use AppleScript to get unread emails from specific account
-									const script = `
-tell application "Mail"
-    set resultList to {}
-    try
-        set targetAccount to first account whose name is "${args.account.replace(/"/g, '\\"')}"
-
-        -- Get mailboxes for this account
-        set acctMailboxes to every mailbox of targetAccount
-
-        -- If mailbox is specified, only search in that mailbox
-        set mailboxesToSearch to acctMailboxes
-        ${
-					args.mailbox
-						? `
-        set mailboxesToSearch to {}
-        repeat with mb in acctMailboxes
-            if name of mb is "${args.mailbox.replace(/"/g, '\\"')}" then
-                set mailboxesToSearch to {mb}
-                exit repeat
-            end if
-        end repeat
-        `
-						: ""
-				}
-
-        -- Search specified mailboxes
-        repeat with mb in mailboxesToSearch
-            try
-                set unreadMessages to (messages of mb whose read status is false)
-                if (count of unreadMessages) > 0 then
-                    set msgLimit to ${args.limit || 10}
-                    if (count of unreadMessages) < msgLimit then
-                        set msgLimit to (count of unreadMessages)
-                    end if
-
-                    repeat with i from 1 to msgLimit
-                        try
-                            set currentMsg to item i of unreadMessages
-                            set msgData to {subject:(subject of currentMsg), sender:(sender of currentMsg), ¬
-                                        date:(date sent of currentMsg) as string, mailbox:(name of mb)}
-
-                            -- Try to get content if possible
-                            try
-                                set msgContent to content of currentMsg
-                                if length of msgContent > 500 then
-                                    set msgContent to (text 1 thru 500 of msgContent) & "..."
-                                end if
-                                set msgData to msgData & {content:msgContent}
-                            on error
-                                set msgData to msgData & {content:"[Content not available]"}
-                            end try
-
-                            set end of resultList to msgData
-                        on error
-                            -- Skip problematic messages
-                        end try
-                    end repeat
-
-                    if (count of resultList) ≥ ${args.limit || 10} then exit repeat
-                end if
-            on error
-                -- Skip problematic mailboxes
-            end try
-        end repeat
-    on error errMsg
-        return "Error: " & errMsg
-    end try
-
-    return resultList
-end tell`;
-
-									try {
-										const asResult = await runAppleScript(script);
-										if (asResult && asResult.startsWith("Error:")) {
-											throw new Error(asResult);
-										}
-
-										// Parse the results - similar to general getUnreadMails
-										const emailData = [];
-										const matches = asResult.match(/\{([^}]+)\}/g);
-										if (matches && matches.length > 0) {
-											for (const match of matches) {
-												try {
-													const props = match
-														.substring(1, match.length - 1)
-														.split(",");
-													const email: any = {};
-
-													props.forEach((prop) => {
-														const parts = prop.split(":");
-														if (parts.length >= 2) {
-															const key = parts[0].trim();
-															const value = parts.slice(1).join(":").trim();
-															email[key] = value;
-														}
-													});
-
-													if (email.subject || email.sender) {
-														emailData.push({
-															subject: email.subject || "No subject",
-															sender: email.sender || "Unknown sender",
-															dateSent: email.date || new Date().toString(),
-															content:
-																email.content || "[Content not available]",
-															isRead: false,
-															mailbox: `${args.account} - ${email.mailbox || "Unknown"}`,
-														});
-													}
-												} catch (parseError) {
-													console.error(
-														"Error parsing email match:",
-														parseError,
-													);
-												}
-											}
-										}
-
-										emails = emailData;
-									} catch (error) {
-										console.error(
-											"Error getting account-specific emails:",
-											error,
-										);
-										// Fallback to general method if specific account fails
-										emails = await mailModule.getUnreadMails(args.limit);
-									}
-								} else {
-									// No account specified, use the general method
-									emails = await mailModule.getUnreadMails(args.limit);
-								}
+								const emails = await mailModule.getUnreadMails(
+									args.limit,
+									args.account,
+									args.mailbox,
+								);
 
 								return {
 									content: [
@@ -683,6 +554,8 @@ end tell`;
 								const emails = await mailModule.searchMails(
 									args.searchTerm,
 									args.limit,
+									args.account,
+									args.mailbox,
 								);
 								return {
 									content: [
@@ -787,6 +660,7 @@ end tell`;
 								const emails = await mailModule.getLatestMails(
 									account,
 									args.limit,
+									args.mailbox,
 								);
 								return {
 									content: [
@@ -838,12 +712,17 @@ end tell`;
 						if (operation === "list") {
 							// List all reminders
 							const lists = await remindersModule.getAllLists();
-							const allReminders = await remindersModule.getAllReminders();
+							const allReminders = await remindersModule.getAllReminders(args.listName);
 							return {
 								content: [
 									{
 										type: "text",
-										text: `Found ${lists.length} lists and ${allReminders.length} reminders.`,
+										text:
+											`Found ${lists.length} lists and ${allReminders.length} open reminders.\n\n` +
+											`Lists:\n${lists.map((l) => `- ${l.name} (ID: ${l.id})`).join("\n")}` +
+											(allReminders.length
+												? `\n\nReminders:\n${allReminders.map(formatReminder).join("\n")}`
+												: ""),
 									},
 								],
 								lists,
@@ -862,7 +741,7 @@ end tell`;
 										type: "text",
 										text:
 											results.length > 0
-												? `Found ${results.length} reminders matching "${searchText}".`
+												? `Found ${results.length} reminders matching "${searchText}":\n${results.map(formatReminder).join("\n")}`
 												: `No reminders found matching "${searchText}".`,
 									},
 								],
@@ -898,7 +777,7 @@ end tell`;
 								content: [
 									{
 										type: "text",
-										text: `Created reminder "${result.name}" ${listName ? `in list "${listName}"` : ""}.`,
+										text: `Created reminder "${result.name}" in list "${result.listName}"${result.dueDate ? ` due ${result.dueDate}` : ""}.\nReminder ID: ${result.id}`,
 									},
 								],
 								success: true,
@@ -918,7 +797,7 @@ end tell`;
 										type: "text",
 										text:
 											results.length > 0
-												? `Found ${results.length} reminders in list with ID "${listId}".`
+												? `Found ${results.length} reminders in list with ID "${listId}":\n${results.map((r) => `- ${JSON.stringify(r)}`).join("\n")}`
 												: `No reminders found in list with ID "${listId}".`,
 									},
 								],
@@ -963,12 +842,13 @@ end tell`;
 
 						switch (operation) {
 							case "search": {
-								const { searchText, limit, fromDate, toDate } = args;
+								const { searchText, limit, fromDate, toDate, calendarName } = args;
 								const events = await calendarModule.searchEvents(
 									searchText!,
 									limit,
 									fromDate,
 									toDate,
+									calendarName,
 								);
 
 								return {
@@ -995,8 +875,8 @@ end tell`;
 							}
 
 							case "open": {
-								const { eventId } = args;
-								const result = await calendarModule.openEvent(eventId!);
+								const { eventId, calendarName } = args;
+								const result = await calendarModule.openEvent(eventId!, calendarName);
 
 								return {
 									content: [
@@ -1012,11 +892,12 @@ end tell`;
 							}
 
 							case "list": {
-								const { limit, fromDate, toDate } = args;
+								const { limit, fromDate, toDate, calendarName } = args;
 								const events = await calendarModule.getEvents(
 									limit,
 									fromDate,
 									toDate,
+									calendarName,
 								);
 
 								const startDateText = fromDate
@@ -1324,6 +1205,26 @@ end tell`;
 			process.exit(1);
 		}
 	})();
+}
+
+// Output formatting helpers
+function formatNote(note: { name: string; content: string; folder?: string; id?: string }): string {
+	const meta = [note.folder && `folder: ${note.folder}`, note.id && `id: ${note.id}`]
+		.filter(Boolean)
+		.join(", ");
+	return `${note.name}${meta ? ` (${meta})` : ""}:\n${note.content}`;
+}
+
+function formatReminder(r: {
+	name: string;
+	listName: string;
+	dueDate: string | null;
+	id: string;
+	body?: string;
+}): string {
+	const due = r.dueDate ? `, due ${r.dueDate}` : "";
+	const notes = r.body ? `\n  Notes: ${r.body.replace(/\n/g, " ").slice(0, 200)}` : "";
+	return `- ${r.name} [${r.listName}${due}] (ID: ${r.id})${notes}`;
 }
 
 // Helper functions for argument type checking

@@ -1,4 +1,5 @@
 import { run } from '@jxa/run';
+import { runJxa } from './osascript.js';
 
 // Type definitions
 interface MapLocation {
@@ -103,109 +104,79 @@ async function requestMapsAccess(): Promise<{ hasAccess: boolean; message: strin
 }
 
 /**
- * Search for locations on the map
+ * Run a MapKit query from JXA. MapKit calls complete asynchronously, so the script
+ * spins the run loop until the completion handler fires or the deadline passes.
+ */
+const MAPKIT_PRELUDE = `
+ObjC.import("MapKit");
+function waitFor(isDone, seconds) {
+  const until = $.NSDate.dateWithTimeIntervalSinceNow(seconds);
+  while (!isDone() && $.NSDate.date.compare(until) < 0) {
+    $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.05));
+  }
+}
+function localSearch(query, limit) {
+  const request = $.MKLocalSearchRequest.alloc.init;
+  request.naturalLanguageQuery = query;
+  let done = false, items = [], error = null;
+  $.MKLocalSearch.alloc.initWithRequest(request).startWithCompletionHandler(function (response, err) {
+    if (err && !err.isNil()) error = ObjC.unwrap(err.localizedDescription);
+    else for (let i = 0; i < Math.min(response.mapItems.count, limit); i++) items.push(response.mapItems.objectAtIndex(i));
+    done = true;
+  });
+  waitFor(() => done, 15);
+  if (!done) throw new Error("Maps search timed out");
+  // MKErrorPlacemarkNotFound means no results, not a failure
+  if (error && items.length === 0 && !/not found|couldn.t be completed/i.test(error)) throw new Error(error);
+  return items;
+}
+function describe(item) {
+  const placemark = item.placemark;
+  // CLLocation's description is "<+lat,+lon> ..."; struct fields do not bridge reliably
+  const coords = ObjC.unwrap(placemark.location.description).match(/<([-+\\d.]+),\\s*([-+\\d.]+)>/);
+  const text = (v) => (v.isNil() ? "" : ObjC.unwrap(v));
+  const address = [
+    [text(placemark.thoroughfare), text(placemark.subThoroughfare)].filter(Boolean).join(" "),
+    [text(placemark.postalCode), text(placemark.locality)].filter(Boolean).join(" "),
+    text(placemark.country),
+  ].filter(Boolean).join(", ");
+  return {
+    name: text(item.name),
+    address: address || text(placemark.title),
+    latitude: coords ? parseFloat(coords[1]) : null,
+    longitude: coords ? parseFloat(coords[2]) : null,
+    category: item.pointOfInterestCategory.isNil() ? null
+      : ObjC.unwrap(item.pointOfInterestCategory).replace("MKPOICategory", ""),
+  };
+}
+`;
+
+/**
+ * Search for locations with MapKit (no Maps window is opened)
  * @param query Search query for locations
  * @param limit Maximum number of results to return
  */
 async function searchLocations(query: string, limit: number = 5): Promise<SearchResult> {
     try {
-        const accessResult = await requestMapsAccess();
-        if (!accessResult.hasAccess) {
-            return {
-                success: false,
-                locations: [],
-                message: accessResult.message
-            };
-        }
-
-        console.error(`searchLocations - Searching for: "${query}"`);
-
-        // First try to use the Maps search function
-        const locations = await run((args: { query: string, limit: number }) => {
-            try {
-                const Maps = Application("Maps");
-                
-                // Launch Maps and search (this is needed for search to work properly)
-                Maps.activate();
-                
-                // Execute search using the URL scheme which is more reliable
-                Maps.activate();
-                const encodedQuery = encodeURIComponent(args.query);
-                Maps.openLocation(`maps://?q=${encodedQuery}`);
-                
-                // For backward compatibility also try the standard search method
-                try {
-                    Maps.search(args.query);
-                } catch (e) {
-                    // Ignore error if search is not supported
-                }
-                
-                // Wait a bit for search results to populate
-                delay(2); // 2 seconds
-                
-                // Try to get search results, if supported by the version of Maps
-                const locations: MapLocation[] = [];
-                
-                try {
-                    // Different versions of Maps have different ways to access results
-                    // We'll need to use a different method for each version
-                    
-                    // Approach 1: Try to get locations directly 
-                    // (this works on some versions of macOS)
-                    const selectedLocation = Maps.selectedLocation();
-                    if (selectedLocation) {
-                        // If we have a selected location, use it
-                        const location: MapLocation = {
-                            id: `loc-${Date.now()}-${Math.random()}`,
-                            name: selectedLocation.name() || args.query,
-                            address: selectedLocation.formattedAddress() || "Address not available",
-                            latitude: selectedLocation.latitude(),
-                            longitude: selectedLocation.longitude(),
-                            category: selectedLocation.category ? selectedLocation.category() : null,
-                            isFavorite: false
-                        };
-                        locations.push(location);
-                    } else {
-                        // If no selected location, use the search field value as name
-                        // and try to get coordinates by doing a UI script
-                        
-                        // Use the user entered search term for the result
-                        const location: MapLocation = {
-                            id: `loc-${Date.now()}-${Math.random()}`,
-                            name: args.query,
-                            address: "Search results - address details not available",
-                            latitude: null,
-                            longitude: null,
-                            category: null,
-                            isFavorite: false
-                        };
-                        locations.push(location);
-                    }
-                } catch (e) {
-                    // If the above didn't work, at least return something based on the query
-                    const location: MapLocation = {
-                        id: `loc-${Date.now()}-${Math.random()}`,
-                        name: args.query,
-                        address: "Search result - address details not available",
-                        latitude: null,
-                        longitude: null,
-                        category: null,
-                        isFavorite: false
-                    };
-                    locations.push(location);
-                }
-                
-                return locations.slice(0, args.limit);
-            } catch (e) {
-                return []; // Return empty array on any error
-            }
-        }, { query, limit }) as MapLocation[];
-        
+        const results = await runJxa<Omit<MapLocation, "id" | "isFavorite">[]>(
+            `${MAPKIT_PRELUDE}
+function run(argv) {
+  const args = JSON.parse(argv[0]);
+  return JSON.stringify(localSearch(args.query, args.limit).map(describe));
+}`,
+            { query, limit: Math.min(Math.max(1, limit), 20) },
+            { app: "Maps", timeoutMs: 30000 },
+        );
+        const locations: MapLocation[] = results.map((r, i) => ({
+            id: `loc-${i}`,
+            ...r,
+            isFavorite: false,
+        }));
         return {
             success: true,
             locations,
-            message: locations.length > 0 ? 
-                `Found ${locations.length} location(s) for "${query}"` : 
+            message: locations.length > 0 ?
+                `Found ${locations.length} location(s) for "${query}"` :
                 `No locations found for "${query}"`
         };
     } catch (error) {
@@ -359,48 +330,57 @@ async function getDirections(
             };
         }
 
-        console.error(`getDirections - Getting directions from "${fromAddress}" to "${toAddress}"`);
+        const transport = { driving: 1, walking: 2, transit: 4 }[transportType];
+        const route = await runJxa<{
+            from: { name: string; address: string };
+            to: { name: string; address: string };
+            distance: number;
+            seconds: number;
+        }>(
+            `${MAPKIT_PRELUDE}
+function run(argv) {
+  const args = JSON.parse(argv[0]);
+  const from = localSearch(args.from, 1)[0];
+  if (!from) throw new Error("Could not find start location: " + args.from);
+  const to = localSearch(args.to, 1)[0];
+  if (!to) throw new Error("Could not find destination: " + args.to);
+  const request = $.MKDirectionsRequest.alloc.init;
+  request.source = from;
+  request.destination = to;
+  request.transportType = args.transport;
+  let done = false, result = null, error = null;
+  $.MKDirections.alloc.initWithRequest(request).calculateETAWithCompletionHandler(function (response, err) {
+    if (err && !err.isNil()) error = ObjC.unwrap(err.localizedDescription);
+    else result = { distance: response.distance, seconds: response.expectedTravelTime };
+    done = true;
+  });
+  waitFor(() => done, 20);
+  if (!done) throw new Error("Directions request timed out");
+  if (error) throw new Error(error);
+  return JSON.stringify({ from: describe(from), to: describe(to), distance: result.distance, seconds: result.seconds });
+}`,
+            { from: fromAddress, to: toAddress, transport },
+            { app: "Maps", timeoutMs: 45000 },
+        );
 
-        const result = await run((args: { 
-            fromAddress: string, 
-            toAddress: string, 
-            transportType: string 
-        }) => {
-            try {
-                const Maps = Application("Maps");
-                Maps.activate();
-                
-                // Ask for directions
-                Maps.getDirections({
-                    from: args.fromAddress,
-                    to: args.toAddress,
-                    by: args.transportType
-                });
-                
-                // Wait for directions to load
-                delay(2);
-                
-                // There's no direct API to get the route details
-                // We'll return basic success and let the Maps UI show the route
-                return {
-                    success: true,
-                    message: `Displaying directions from "${args.fromAddress}" to "${args.toAddress}" by ${args.transportType}`,
-                    route: {
-                        distance: "See Maps app for details",
-                        duration: "See Maps app for details",
-                        startAddress: args.fromAddress,
-                        endAddress: args.toAddress
-                    }
-                };
-            } catch (e) {
-                return {
-                    success: false,
-                    message: `Error getting directions: ${e}`
-                };
-            }
-        }, { fromAddress, toAddress, transportType }) as DirectionResult;
-        
-        return result;
+        const km = (route.distance / 1000).toFixed(1);
+        const minutes = Math.round(route.seconds / 60);
+        const duration = minutes >= 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`;
+        const flag = { driving: "d", walking: "w", transit: "r" }[transportType];
+        const link = `https://maps.apple.com/?saddr=${encodeURIComponent(fromAddress)}` +
+            `&daddr=${encodeURIComponent(toAddress)}&dirflg=${flag}`;
+        const fromLabel = [route.from.name, route.from.address].filter(Boolean).join(", ");
+        const toLabel = [route.to.name, route.to.address].filter(Boolean).join(", ");
+        return {
+            success: true,
+            message: `${transportType} from ${fromLabel} to ${toLabel}: ${km} km, about ${duration}.\nOpen in Maps: ${link}`,
+            route: {
+                distance: `${km} km`,
+                duration,
+                startAddress: fromLabel,
+                endAddress: toLabel,
+            },
+        };
     } catch (error) {
         return {
             success: false,

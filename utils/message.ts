@@ -1,9 +1,19 @@
-import {runAppleScript} from 'run-applescript';
 import { promisify } from 'node:util';
-import { exec } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { access } from 'node:fs/promises';
+import { asString, runAppleScript } from './osascript.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+const CHAT_DB = `${process.env.HOME}/Library/Messages/chat.db`;
+
+/** Query chat.db read-only. execFile keeps user input away from a shell. */
+async function queryChatDb(query: string): Promise<string> {
+    const { stdout } = await execFileAsync('sqlite3', ['-readonly', '-json', CHAT_DB, query], {
+        timeout: 15000,
+        maxBuffer: 64 * 1024 * 1024,
+    });
+    return stdout;
+}
 
 // Configuration
 const CONFIG = {
@@ -37,47 +47,42 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = MAX_RETR
 }
 
 function normalizePhoneNumber(phone: string): string[] {
+    // iMessage handles can be email addresses
+    if (phone.includes('@')) {
+        return [phone.trim()];
+    }
+
     // Remove all non-numeric characters except +
     const cleaned = phone.replace(/[^0-9+]/g, '');
-    
-    // If it's already in the correct format (+1XXXXXXXXXX), return just that
-    if (/^\+1\d{10}$/.test(cleaned)) {
-        return [cleaned];
+    const formats = new Set<string>([cleaned]);
+
+    if (cleaned.startsWith('+')) {
+        // Already international; chat.db stores handles in E.164
+        return Array.from(formats);
     }
-    
-    // If it starts with 1 and has 11 digits total
-    if (/^1\d{10}$/.test(cleaned)) {
-        return [`+${cleaned}`];
-    }
-    
-    // If it's 10 digits
+    // North American shorthand: 10 digits, or 11 starting with 1
     if (/^\d{10}$/.test(cleaned)) {
-        return [`+1${cleaned}`];
-    }
-    
-    // If none of the above match, try multiple formats
-    const formats = new Set<string>();
-    
-    if (cleaned.startsWith('+1')) {
-        formats.add(cleaned);
-    } else if (cleaned.startsWith('1')) {
-        formats.add(`+${cleaned}`);
-    } else {
         formats.add(`+1${cleaned}`);
+    } else if (/^1\d{10}$/.test(cleaned)) {
+        formats.add(`+${cleaned}`);
+    } else if (/^00\d+$/.test(cleaned)) {
+        formats.add(`+${cleaned.slice(2)}`);
     }
-    
     return Array.from(formats);
 }
 
 async function sendMessage(phoneNumber: string, message: string) {
-    const escapedMessage = message.replace(/"/g, '\\"');
-    const result = await runAppleScript(`
+    return runAppleScript(buildSendScript(phoneNumber, message), { app: "Messages" });
+}
+
+/** Exported for a compile-only test; running it sends a message. */
+function buildSendScript(phoneNumber: string, message: string): string {
+    return `
 tell application "Messages"
     set targetService to 1st service whose service type = iMessage
-    set targetBuddy to buddy "${phoneNumber}"
-    send "${escapedMessage}" to targetBuddy
-end tell`);
-    return result;
+    set targetBuddy to buddy ${asString(phoneNumber)}
+    send ${asString(message)} to targetBuddy
+end tell`;
 }
 
 interface Message {
@@ -91,11 +96,10 @@ interface Message {
 
 async function checkMessagesDBAccess(): Promise<boolean> {
     try {
-        const dbPath = `${process.env.HOME}/Library/Messages/chat.db`;
-        await access(dbPath);
-        
+        await access(CHAT_DB);
+
         // Additional check - try to query the database
-        await execAsync(`sqlite3 "${dbPath}" "SELECT 1;"`);
+        await queryChatDb('SELECT 1;');
         
         return true;
     } catch (error) {
@@ -131,7 +135,7 @@ async function requestMessagesAccess(): Promise<{ hasAccess: boolean; message: s
 
         // If no database access, check if Messages app is at least accessible
         try {
-            await runAppleScript('tell application "Messages" to return name');
+            await runAppleScript('tell application "Messages" to return name', { app: "Messages" });
             return {
                 hasAccess: false,
                 message: "Messages app is accessible but database access is required. Please:\n1. Open System Settings > Privacy & Security > Full Disk Access\n2. Add your terminal application (Terminal.app or iTerm.app)\n3. Restart your terminal and try again\n4. Note: This is required to read message history from the Messages database"
@@ -241,8 +245,8 @@ async function getAttachmentPaths(messageId: number): Promise<string[]> {
             WHERE message_attachment_join.message_id = ${messageId}
         `;
         
-        const { stdout } = await execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`);
-        
+        const stdout = await queryChatDb(query);
+
         if (!stdout.trim()) {
             return [];
         }
@@ -304,9 +308,7 @@ async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]>
         `;
 
         // Execute query with retries
-        const { stdout } = await retryOperation(() => 
-            execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`)
-        );
+        const stdout = await retryOperation(() => queryChatDb(query));
         
         if (!stdout.trim()) {
             console.error("No messages found in database for the given phone number");
@@ -430,9 +432,7 @@ async function getUnreadMessages(limit = 10): Promise<Message[]> {
         `;
 
         // Execute query with retries
-        const { stdout } = await retryOperation(() => 
-            execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`)
-        );
+        const stdout = await retryOperation(() => queryChatDb(query));
         
         if (!stdout.trim()) {
             console.error("No unread messages found");
@@ -599,4 +599,4 @@ end tell`;
     }
 }
 
-export default { sendMessage, readMessages, scheduleMessage, getUnreadMessages, requestMessagesAccess };
+export default { sendMessage, buildSendScript, readMessages, scheduleMessage, getUnreadMessages, requestMessagesAccess };

@@ -1,18 +1,20 @@
-import { runAppleScript } from "run-applescript";
+import { runAppleScript, runJxa } from "./osascript.js";
 
 // Configuration
 const CONFIG = {
-	// Maximum notes to process (to avoid performance issues)
+	// Maximum notes to return
 	MAX_NOTES: 50,
 	// Maximum content length for previews
 	MAX_CONTENT_PREVIEW: 200,
-	// Timeout for operations
-	TIMEOUT_MS: 8000,
+	// Notes can take several seconds to wake up its iCloud store
+	TIMEOUT_MS: 45000,
 };
 
 type Note = {
 	name: string;
 	content: string;
+	id?: string;
+	folder?: string;
 	creationDate?: Date;
 	modificationDate?: Date;
 };
@@ -25,17 +27,20 @@ type CreateNoteResult = {
 	usedDefaultFolder?: boolean;
 };
 
+// Deleted notes stay in this folder for 30 days and still show up in `notes`
+const RECENTLY_DELETED = "Recently Deleted";
+
+type RawNote = { id: string; name: string; text: string; folder: string; modified: string };
+
 /**
  * Check if Notes app is accessible
  */
 async function checkNotesAccess(): Promise<boolean> {
 	try {
-		const script = `
-tell application "Notes"
-    return name
-end tell`;
-
-		await runAppleScript(script);
+		await runAppleScript('tell application "Notes" to return name', {
+			app: "Notes",
+			timeoutMs: 10000,
+		});
 		return true;
 	} catch (error) {
 		console.error(
@@ -49,165 +54,106 @@ end tell`;
  * Request Notes app access and provide instructions if not available
  */
 async function requestNotesAccess(): Promise<{ hasAccess: boolean; message: string }> {
-	try {
-		// First check if we already have access
-		const hasAccess = await checkNotesAccess();
-		if (hasAccess) {
-			return {
-				hasAccess: true,
-				message: "Notes access is already granted."
-			};
-		}
-
-		// If no access, provide clear instructions
-		return {
-			hasAccess: false,
-			message: "Notes access is required but not granted. Please:\n1. Open System Settings > Privacy & Security > Automation\n2. Find your terminal/app in the list and enable 'Notes'\n3. Restart your terminal and try again\n4. If the option is not available, run this command again to trigger the permission dialog"
-		};
-	} catch (error) {
-		return {
-			hasAccess: false,
-			message: `Error checking Notes access: ${error instanceof Error ? error.message : String(error)}`
-		};
+	const hasAccess = await checkNotesAccess();
+	if (hasAccess) {
+		return { hasAccess: true, message: "Notes access is already granted." };
 	}
+	return {
+		hasAccess: false,
+		message:
+			"Notes access is required but not granted. Please:\n1. Open System Settings > Privacy & Security > Automation\n2. Find your terminal/app in the list and enable 'Notes'\n3. Restart your terminal and try again\n4. If the option is not available, run this command again to trigger the permission dialog",
+	};
 }
 
 /**
- * Get all notes from Notes app (limited for performance)
+ * Load every note's id, title, plaintext, folder and modification date with bulk
+ * Apple Events (one round trip per property, not per note), newest first.
+ */
+async function loadNotes(folderName?: string): Promise<RawNote[]> {
+	const notes = await runJxa<RawNote[]>(
+		`function run(argv) {
+  const args = JSON.parse(argv[0]);
+  const Notes = Application("Notes");
+  let spec = Notes.notes;
+  if (args.folderName) {
+    const folders = Notes.folders.whose({ name: args.folderName });
+    if (folders.length === 0) return JSON.stringify([]);
+    spec = folders[0].notes;
+  }
+  const ids = spec.id();
+  const names = spec.name();
+  const texts = spec.plaintext();
+  const modified = spec.modificationDate();
+  // Map note id -> folder name with one call per folder rather than per note
+  const folderOf = {};
+  Notes.folders().forEach((folder) => {
+    try {
+      const folderName = folder.name();
+      folder.notes.id().forEach((id) => { folderOf[id] = folderName; });
+    } catch (e) {}
+  });
+  return JSON.stringify(ids.map((id, i) => ({
+    id, name: names[i] || "", text: texts[i] || "", folder: folderOf[id] || "",
+    modified: modified[i] ? modified[i].toISOString() : "",
+  })));
+}`,
+		{ folderName: folderName ?? null },
+		{ app: "Notes", timeoutMs: CONFIG.TIMEOUT_MS },
+	);
+	return notes
+		.filter((n) => n.folder !== RECENTLY_DELETED)
+		.sort((a, b) => b.modified.localeCompare(a.modified));
+}
+
+function toNote(raw: RawNote): Note {
+	const text = raw.text.length > CONFIG.MAX_CONTENT_PREVIEW
+		? `${raw.text.slice(0, CONFIG.MAX_CONTENT_PREVIEW)}...`
+		: raw.text;
+	return {
+		id: raw.id,
+		name: raw.name || "Untitled Note",
+		content: text,
+		folder: raw.folder,
+		modificationDate: raw.modified ? new Date(raw.modified) : undefined,
+	};
+}
+
+/**
+ * Get the most recently modified notes (limited for output size)
  */
 async function getAllNotes(): Promise<Note[]> {
-	try {
-		const accessResult = await requestNotesAccess();
-		if (!accessResult.hasAccess) {
-			throw new Error(accessResult.message);
-		}
-
-		const script = `
-tell application "Notes"
-    set notesList to {}
-    set noteCount to 0
-
-    -- Get all notes from all folders
-    set allNotes to notes
-
-    repeat with i from 1 to (count of allNotes)
-        if noteCount >= ${CONFIG.MAX_NOTES} then exit repeat
-
-        try
-            set currentNote to item i of allNotes
-            set noteName to name of currentNote
-            set noteContent to plaintext of currentNote
-
-            -- Limit content for preview
-            if (length of noteContent) > ${CONFIG.MAX_CONTENT_PREVIEW} then
-                set noteContent to (characters 1 thru ${CONFIG.MAX_CONTENT_PREVIEW} of noteContent) as string
-                set noteContent to noteContent & "..."
-            end if
-
-            set noteInfo to {name:noteName, content:noteContent}
-            set notesList to notesList & {noteInfo}
-            set noteCount to noteCount + 1
-        on error
-            -- Skip problematic notes
-        end try
-    end repeat
-
-    return notesList
-end tell`;
-
-		const result = (await runAppleScript(script)) as any;
-
-		// Convert AppleScript result to our format
-		const resultArray = Array.isArray(result) ? result : result ? [result] : [];
-
-		return resultArray.map((noteData: any) => ({
-			name: noteData.name || "Untitled Note",
-			content: noteData.content || "",
-			creationDate: undefined,
-			modificationDate: undefined,
-		}));
-	} catch (error) {
-		console.error(
-			`Error getting all notes: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		return [];
+	const accessResult = await requestNotesAccess();
+	if (!accessResult.hasAccess) {
+		throw new Error(accessResult.message);
 	}
+	return (await loadNotes()).slice(0, CONFIG.MAX_NOTES).map(toNote);
 }
 
 /**
- * Find notes by search text
+ * Find notes whose title or body contains the search text (case-insensitive)
  */
 async function findNote(searchText: string): Promise<Note[]> {
-	try {
-		const accessResult = await requestNotesAccess();
-		if (!accessResult.hasAccess) {
-			throw new Error(accessResult.message);
-		}
-
-		if (!searchText || searchText.trim() === "") {
-			return [];
-		}
-
-		const searchTerm = searchText.toLowerCase();
-
-		const script = `
-tell application "Notes"
-    set matchedNotes to {}
-    set noteCount to 0
-    set searchTerm to "${searchTerm}"
-
-    -- Get all notes and search through them
-    set allNotes to notes
-
-    repeat with i from 1 to (count of allNotes)
-        if noteCount >= ${CONFIG.MAX_NOTES} then exit repeat
-
-        try
-            set currentNote to item i of allNotes
-            set noteName to name of currentNote
-            set noteContent to plaintext of currentNote
-
-            -- Simple case-insensitive search in name and content
-            if (noteName contains searchTerm) or (noteContent contains searchTerm) then
-                -- Limit content for preview
-                if (length of noteContent) > ${CONFIG.MAX_CONTENT_PREVIEW} then
-                    set noteContent to (characters 1 thru ${CONFIG.MAX_CONTENT_PREVIEW} of noteContent) as string
-                    set noteContent to noteContent & "..."
-                end if
-
-                set noteInfo to {name:noteName, content:noteContent}
-                set matchedNotes to matchedNotes & {noteInfo}
-                set noteCount to noteCount + 1
-            end if
-        on error
-            -- Skip problematic notes
-        end try
-    end repeat
-
-    return matchedNotes
-end tell`;
-
-		const result = (await runAppleScript(script)) as any;
-
-		// Convert AppleScript result to our format
-		const resultArray = Array.isArray(result) ? result : result ? [result] : [];
-
-		return resultArray.map((noteData: any) => ({
-			name: noteData.name || "Untitled Note",
-			content: noteData.content || "",
-			creationDate: undefined,
-			modificationDate: undefined,
-		}));
-	} catch (error) {
-		console.error(
-			`Error finding notes: ${error instanceof Error ? error.message : String(error)}`,
-		);
+	if (!searchText || searchText.trim() === "") {
 		return [];
 	}
+	const accessResult = await requestNotesAccess();
+	if (!accessResult.hasAccess) {
+		throw new Error(accessResult.message);
+	}
+	const term = searchText.toLowerCase();
+	return (await loadNotes())
+		.filter((n) => n.name.toLowerCase().includes(term) || n.text.toLowerCase().includes(term))
+		.slice(0, CONFIG.MAX_NOTES)
+		.map(toNote);
+}
+
+function escapeHtml(text: string): string {
+	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /**
- * Create a new note
+ * Create a new note. Notes stores HTML, so the title becomes the heading and each
+ * body line its own paragraph.
  */
 async function createNote(
 	title: string,
@@ -217,116 +163,53 @@ async function createNote(
 	try {
 		const accessResult = await requestNotesAccess();
 		if (!accessResult.hasAccess) {
-			return {
-				success: false,
-				message: accessResult.message,
-			};
+			return { success: false, message: accessResult.message };
 		}
 
-		// Validate inputs
 		if (!title || title.trim() === "") {
-			return {
-				success: false,
-				message: "Note title cannot be empty",
-			};
+			return { success: false, message: "Note title cannot be empty" };
 		}
 
-		// Keep the body as-is to preserve original formatting
-		// Notes.app handles markdown and formatting natively
-		const formattedBody = body.trim();
+		const html =
+			`<div><h1>${escapeHtml(title)}</h1></div>` +
+			body
+				.trim()
+				.split("\n")
+				.map((line) => `<div>${line.trim() ? escapeHtml(line) : "<br>"}</div>`)
+				.join("");
 
-		// Use file-based approach for complex content to avoid AppleScript string issues
-		const tmpFile = `/tmp/note-content-${Date.now()}.txt`;
-		const fs = require("fs");
+		const result = await runJxa<{ id: string; folder: string; createdFolder: boolean }>(
+			`function run(argv) {
+  const args = JSON.parse(argv[0]);
+  const Notes = Application("Notes");
+  let folders = Notes.folders.whose({ name: args.folderName });
+  let createdFolder = false;
+  let folder;
+  if (folders.length > 0) {
+    folder = folders[0];
+  } else if (args.folderName === "Claude") {
+    // Only the server's own default folder is created on demand
+    folder = Notes.Folder({ name: args.folderName });
+    Notes.defaultAccount().folders.push(folder);
+    folder = Notes.defaultAccount().folders.whose({ name: args.folderName })[0];
+    createdFolder = true;
+  } else {
+    throw new Error("Folder not found: " + args.folderName);
+  }
+  const note = Notes.Note({ body: args.html });
+  folder.notes.push(note);
+  return JSON.stringify({ id: note.id(), folder: folder.name(), createdFolder });
+}`,
+			{ folderName, html },
+			{ app: "Notes", timeoutMs: CONFIG.TIMEOUT_MS },
+		);
 
-		// Write content to temporary file to avoid AppleScript escaping issues
-		fs.writeFileSync(tmpFile, formattedBody, "utf8");
-
-		const script = `
-tell application "Notes"
-    set targetFolder to null
-    set folderFound to false
-    set actualFolderName to "${folderName}"
-
-    -- Try to find the specified folder
-    try
-        set allFolders to folders
-        repeat with currentFolder in allFolders
-            if name of currentFolder is "${folderName}" then
-                set targetFolder to currentFolder
-                set folderFound to true
-                exit repeat
-            end if
-        end repeat
-    on error
-        -- Folders might not be accessible
-    end try
-
-    -- If folder not found and it's a test folder, try to create it
-    if not folderFound and ("${folderName}" is "Claude" or "${folderName}" is "Test-Claude") then
-        try
-            make new folder with properties {name:"${folderName}"}
-            -- Try to find it again
-            set allFolders to folders
-            repeat with currentFolder in allFolders
-                if name of currentFolder is "${folderName}" then
-                    set targetFolder to currentFolder
-                    set folderFound to true
-                    set actualFolderName to "${folderName}"
-                    exit repeat
-                end if
-            end repeat
-        on error
-            -- Folder creation failed, use default
-            set actualFolderName to "Notes"
-        end try
-    end if
-
-    -- Read content from file to preserve formatting
-    set noteContent to read file POSIX file "${tmpFile}" as «class utf8»
-
-    -- Create the note with proper content
-    if folderFound and targetFolder is not null then
-        -- Create note in specified folder
-        make new note at targetFolder with properties {name:"${title.replace(/"/g, '\\"')}", body:noteContent}
-        return "SUCCESS:" & actualFolderName & ":false"
-    else
-        -- Create note in default location
-        make new note with properties {name:"${title.replace(/"/g, '\\"')}", body:noteContent}
-        return "SUCCESS:Notes:true"
-    end if
-end tell`;
-
-		const result = (await runAppleScript(script)) as string;
-
-		// Clean up temporary file
-		try {
-			fs.unlinkSync(tmpFile);
-		} catch (e) {
-			// Ignore cleanup errors
-		}
-
-		// Parse the result string format: "SUCCESS:folderName:usedDefault"
-		if (result && typeof result === "string" && result.startsWith("SUCCESS:")) {
-			const parts = result.split(":");
-			const folderName = parts[1] || "Notes";
-			const usedDefaultFolder = parts[2] === "true";
-
-			return {
-				success: true,
-				note: {
-					name: title,
-					content: formattedBody,
-				},
-				folderName: folderName,
-				usedDefaultFolder: usedDefaultFolder,
-			};
-		} else {
-			return {
-				success: false,
-				message: `Failed to create note: ${result || "No result from AppleScript"}`,
-			};
-		}
+		return {
+			success: true,
+			note: { id: result.id, name: title, content: body.trim() },
+			folderName: result.folder,
+			usedDefaultFolder: result.createdFolder,
+		};
 	} catch (error) {
 		return {
 			success: false,
@@ -344,87 +227,21 @@ async function getNotesFromFolder(
 	try {
 		const accessResult = await requestNotesAccess();
 		if (!accessResult.hasAccess) {
-			return {
-				success: false,
-				message: accessResult.message,
-			};
+			return { success: false, message: accessResult.message };
 		}
-
-		const script = `
-tell application "Notes"
-    set notesList to {}
-    set noteCount to 0
-    set folderFound to false
-
-    -- Try to find the specified folder
-    try
-        set allFolders to folders
-        repeat with currentFolder in allFolders
-            if name of currentFolder is "${folderName}" then
-                set folderFound to true
-
-                -- Get notes from this folder
-                set folderNotes to notes of currentFolder
-
-                repeat with i from 1 to (count of folderNotes)
-                    if noteCount >= ${CONFIG.MAX_NOTES} then exit repeat
-
-                    try
-                        set currentNote to item i of folderNotes
-                        set noteName to name of currentNote
-                        set noteContent to plaintext of currentNote
-
-                        -- Limit content for preview
-                        if (length of noteContent) > ${CONFIG.MAX_CONTENT_PREVIEW} then
-                            set noteContent to (characters 1 thru ${CONFIG.MAX_CONTENT_PREVIEW} of noteContent) as string
-                            set noteContent to noteContent & "..."
-                        end if
-
-                        set noteInfo to {name:noteName, content:noteContent}
-                        set notesList to notesList & {noteInfo}
-                        set noteCount to noteCount + 1
-                    on error
-                        -- Skip problematic notes
-                    end try
-                end repeat
-
-                exit repeat
-            end if
-        end repeat
-    on error
-        -- Handle folder access errors
-    end try
-
-    if not folderFound then
-        return "ERROR:Folder not found"
-    end if
-
-    return "SUCCESS:" & (count of notesList)
-end tell`;
-
-		const result = (await runAppleScript(script)) as any;
-
-		// Simple success/failure check based on string result
-		if (result && typeof result === "string") {
-			if (result.startsWith("ERROR:")) {
-				return {
-					success: false,
-					message: result.replace("ERROR:", ""),
-				};
-			} else if (result.startsWith("SUCCESS:")) {
-				// For now, just return success - the actual notes are complex to parse from AppleScript
-				return {
-					success: true,
-					notes: [], // Return empty array for simplicity
-				};
-			}
+		const folderExists = await runJxa<boolean>(
+			`function run(argv) {
+  const args = JSON.parse(argv[0]);
+  return JSON.stringify(Application("Notes").folders.whose({ name: args.folderName }).length > 0);
+}`,
+			{ folderName },
+			{ app: "Notes", timeoutMs: CONFIG.TIMEOUT_MS },
+		);
+		if (!folderExists) {
+			return { success: false, message: "Folder not found" };
 		}
-
-		// If we get here, assume folder was found but no notes
-		return {
-			success: true,
-			notes: [],
-		};
+		const notes = (await loadNotes(folderName)).slice(0, CONFIG.MAX_NOTES).map(toNote);
+		return { success: true, notes };
 	} catch (error) {
 		return {
 			success: false,
@@ -440,28 +257,15 @@ async function getRecentNotesFromFolder(
 	folderName: string,
 	limit: number = 5,
 ): Promise<{ success: boolean; notes?: Note[]; message?: string }> {
-	try {
-		// For simplicity, just get notes from folder (they're typically in recent order)
-		const result = await getNotesFromFolder(folderName);
-
-		if (result.success && result.notes) {
-			return {
-				success: true,
-				notes: result.notes.slice(0, Math.min(limit, result.notes.length)),
-			};
-		}
-
-		return result;
-	} catch (error) {
-		return {
-			success: false,
-			message: `Failed to get recent notes from folder: ${error instanceof Error ? error.message : String(error)}`,
-		};
+	const result = await getNotesFromFolder(folderName);
+	if (result.success && result.notes) {
+		return { success: true, notes: result.notes.slice(0, Math.max(0, limit)) };
 	}
+	return result;
 }
 
 /**
- * Get notes by date range (simplified implementation)
+ * Get notes from a folder modified within a date range
  */
 async function getNotesByDateRange(
 	folderName: string,
@@ -469,25 +273,15 @@ async function getNotesByDateRange(
 	toDate?: string,
 	limit: number = 20,
 ): Promise<{ success: boolean; notes?: Note[]; message?: string }> {
-	try {
-		// For simplicity, just return notes from folder
-		// Date filtering is complex and unreliable in AppleScript
-		const result = await getNotesFromFolder(folderName);
-
-		if (result.success && result.notes) {
-			return {
-				success: true,
-				notes: result.notes.slice(0, Math.min(limit, result.notes.length)),
-			};
-		}
-
-		return result;
-	} catch (error) {
-		return {
-			success: false,
-			message: `Failed to get notes by date range: ${error instanceof Error ? error.message : String(error)}`,
-		};
-	}
+	const result = await getNotesFromFolder(folderName);
+	if (!result.success || !result.notes) return result;
+	const from = fromDate ? new Date(fromDate).getTime() : -Infinity;
+	const to = toDate ? new Date(toDate).getTime() : Infinity;
+	const notes = result.notes.filter((n) => {
+		const t = n.modificationDate?.getTime();
+		return t === undefined || (t >= from && t <= to);
+	});
+	return { success: true, notes: notes.slice(0, Math.max(0, limit)) };
 }
 
 export default {
