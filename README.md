@@ -179,6 +179,10 @@ Run the checkout as an MCP server (use absolute paths):
 - Every Apple Event is bounded. Tune with `APPLE_MCP_TIMEOUT_MS` (default 30000),
   `APPLE_MCP_MAIL_TIMEOUT_MS` (45000) and `APPLE_MCP_CALENDAR_TIMEOUT_MS` (90000). A slow
   app returns a "did not respond within" error instead of hanging the request.
+- Read-only mode: set `APPLE_MCP_READ_ONLY=1` to block everything that sends on your
+  behalf (`messages` send and schedule, `mail` send). Reads, and creating notes, reminders
+  and calendar events, keep working. A blocked call returns
+  "... is blocked by APPLE_MCP_READ_ONLY."
 
 ### Tests
 

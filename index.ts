@@ -6,6 +6,7 @@ import {
 	ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import tools from "./tools";
+import { readOnlyBlock } from "./utils/readonly";
 
 
 // Safe mode implementation - lazy loading of modules
@@ -201,6 +202,11 @@ function initServer() {
 
 			if (!args) {
 				throw new Error("No arguments provided");
+			}
+
+			const blocked = readOnlyBlock(name, (args as { operation?: unknown }).operation);
+			if (blocked) {
+				return { content: [{ type: "text", text: blocked }], isError: true };
 			}
 
 			switch (name) {

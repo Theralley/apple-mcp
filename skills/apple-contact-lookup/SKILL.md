@@ -11,8 +11,9 @@ Never guess a phone number or address. Resolve it from Contacts first.
 
 - `contacts` (name) — partial, case-insensitive name match; returns `Name: phones, emails`
 - `messages.read` (phoneNumber, limit) — history with one handle (phone or email)
-- `messages.send` (phoneNumber, message) — sends immediately; needs explicit confirmation
-- `mail.send` (to, subject, body) — sends immediately; needs explicit confirmation
+- `messages.send` (phoneNumber, message) — sends immediately; blocked when the server runs
+  with `APPLE_MCP_READ_ONLY=1`
+- `mail.send` (to, subject, body) — sends immediately; blocked under `APPLE_MCP_READ_ONLY=1`
 
 ## Steps
 
@@ -22,4 +23,6 @@ Never guess a phone number or address. Resolve it from Contacts first.
 4. For "what did X say", call `messages.read` with the chosen handle. International
    numbers must keep their `+country` prefix exactly as Contacts returned it.
 5. Before `messages.send` or `mail.send`, show the recipient, the exact text and ask for a
-   clear yes. These calls send immediately and cannot be recalled.
+   clear yes. These calls send immediately and cannot be recalled. If the call returns
+   "blocked by APPLE_MCP_READ_ONLY", do not look for another way to send: give the user
+   the recipient and text to send themselves (for email, a Mail draft is fine).
