@@ -1,10 +1,10 @@
 import { describe, it, expect } from "bun:test";
-import { TEST_DATA } from "../fixtures/test-data.js";
+import { ALLOW_UNSAFE, TEST_DATA } from "../fixtures/test-data.js";
 import { assertNotEmpty, assertValidDate, sleep } from "../helpers/test-utils.js";
 import messagesModule from "../../utils/message.js";
 
 describe("Messages Integration Tests", () => {
-  describe("sendMessage", () => {
+  describe.skipIf(!ALLOW_UNSAFE)("sendMessage", () => {
     it("should send a message to test phone number", async () => {
       const testMessage = `Test message from Claude MCP at ${new Date().toLocaleString()}`;
       
@@ -119,7 +119,7 @@ describe("Messages Integration Tests", () => {
     }, 10000);
   });
 
-  describe("scheduleMessage", () => {
+  describe.skipIf(!ALLOW_UNSAFE)("scheduleMessage", () => {
     it("should schedule a message for future delivery", async () => {
       const futureTime = new Date(Date.now() + 10000); // 10 seconds from now
       const scheduleTestMessage = `Scheduled test message at ${futureTime.toLocaleString()}`;
@@ -175,7 +175,7 @@ describe("Messages Integration Tests", () => {
   });
 
   describe("Error Handling", () => {
-    it("should handle empty message gracefully", async () => {
+    it.skipIf(!ALLOW_UNSAFE)("should handle empty message gracefully", async () => {
       try {
         await messagesModule.sendMessage(TEST_DATA.PHONE_NUMBER, "");
         console.log("✅ Handled empty message (may be allowed)");
@@ -184,7 +184,7 @@ describe("Messages Integration Tests", () => {
       }
     }, 5000);
 
-    it("should handle invalid phone number gracefully", async () => {
+    it.skipIf(!ALLOW_UNSAFE)("should handle invalid phone number gracefully", async () => {
       try {
         await messagesModule.sendMessage("invalid-phone", "Test message");
         console.log("⚠️ Invalid phone number was accepted (unexpected)");

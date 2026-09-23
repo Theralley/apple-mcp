@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { TEST_DATA } from "../fixtures/test-data.js";
+import { ALLOW_UNSAFE, TEST_DATA } from "../fixtures/test-data.js";
 import { assertNotEmpty, sleep } from "../helpers/test-utils.js";
 import mapsModule from "../../utils/maps.js";
 
@@ -71,7 +71,7 @@ describe("Maps Integration Tests", () => {
     }, 15000);
   });
 
-  describe("saveLocation", () => {
+  describe.skipIf(!ALLOW_UNSAFE)("saveLocation", () => {
     it("should save a location as favorite", async () => {
       const testLocationName = `Test Location ${Date.now()}`;
       
@@ -110,7 +110,7 @@ describe("Maps Integration Tests", () => {
     }, 15000);
   });
 
-  describe("dropPin", () => {
+  describe.skipIf(!ALLOW_UNSAFE)("dropPin", () => {
     it("should drop a pin at a location", async () => {
       const testPinName = `Test Pin ${Date.now()}`;
       
@@ -200,7 +200,7 @@ describe("Maps Integration Tests", () => {
     }, 15000);
   });
 
-  describe("listGuides", () => {
+  describe.skipIf(!ALLOW_UNSAFE)("listGuides", () => {
     it("should list existing guides", async () => {
       const result = await mapsModule.listGuides();
       
@@ -217,7 +217,7 @@ describe("Maps Integration Tests", () => {
     }, 15000);
   });
 
-  describe("createGuide", () => {
+  describe.skipIf(!ALLOW_UNSAFE)("createGuide", () => {
     it("should create a new guide", async () => {
       const testGuideName = `${TEST_DATA.MAPS.testGuideName} ${Date.now()}`;
       
@@ -252,7 +252,7 @@ describe("Maps Integration Tests", () => {
     }, 20000);
   });
 
-  describe("addToGuide", () => {
+  describe.skipIf(!ALLOW_UNSAFE)("addToGuide", () => {
     it("should add a location to a guide", async () => {
       const testGuideName = `Guide for Adding ${Date.now()}`;
       

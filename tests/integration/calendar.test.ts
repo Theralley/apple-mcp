@@ -6,7 +6,7 @@ import calendarModule from "../../utils/calendar.js";
 describe("Calendar Integration Tests", () => {
   describe("getEvents", () => {
     it("should retrieve calendar events for next week", async () => {
-      const events = await calendarModule.getEvents(10);
+      const events = await calendarModule.getEvents(10, undefined, undefined, TEST_DATA.CALENDAR.calendarName);
       
       expect(Array.isArray(events)).toBe(true);
       console.log(`Found ${events.length} events in the next 7 days`);
@@ -51,7 +51,8 @@ describe("Calendar Integration Tests", () => {
       const events = await calendarModule.getEvents(
         20,
         tomorrow.toISOString(),
-        nextWeek.toISOString()
+        nextWeek.toISOString(),
+        TEST_DATA.CALENDAR.calendarName
       );
       
       expect(Array.isArray(events)).toBe(true);
@@ -72,7 +73,7 @@ describe("Calendar Integration Tests", () => {
 
     it("should limit event count correctly", async () => {
       const limit = 3;
-      const events = await calendarModule.getEvents(limit);
+      const events = await calendarModule.getEvents(limit, undefined, undefined, TEST_DATA.CALENDAR.calendarName);
       
       expect(Array.isArray(events)).toBe(true);
       expect(events.length).toBeLessThanOrEqual(limit);
@@ -96,7 +97,9 @@ describe("Calendar Integration Tests", () => {
         tomorrow.toISOString(),
         eventEndTime.toISOString(),
         TEST_DATA.CALENDAR.testEvent.location,
-        TEST_DATA.CALENDAR.testEvent.notes
+        TEST_DATA.CALENDAR.testEvent.notes,
+        false,
+        TEST_DATA.CALENDAR.calendarName, // never write to a real calendar
       );
       
       expect(result.success).toBe(true);
@@ -123,7 +126,8 @@ describe("Calendar Integration Tests", () => {
         eventEnd.toISOString(),
         "All Day Location",
         "This is an all-day event",
-        true // isAllDay
+        true, // isAllDay
+        TEST_DATA.CALENDAR.calendarName, // never write to a real calendar
       );
       
       expect(result.success).toBe(true);
@@ -178,13 +182,15 @@ describe("Calendar Integration Tests", () => {
         searchEventTime.toISOString(),
         searchEventEndTime.toISOString(),
         "Search Test Location",
-        "This event is for search testing"
+        "This event is for search testing",
+        false,
+        TEST_DATA.CALENDAR.calendarName, // never write to a real calendar
       );
       
       await sleep(3000); // Wait for event to be indexed
       
       // Now search for it
-      const searchResults = await calendarModule.searchEvents("Searchable Test", 10);
+      const searchResults = await calendarModule.searchEvents("Searchable Test", 10, undefined, undefined, TEST_DATA.CALENDAR.calendarName);
       
       expect(Array.isArray(searchResults)).toBe(true);
       
@@ -216,7 +222,8 @@ describe("Calendar Integration Tests", () => {
         "meeting",
         5,
         nextMonth.toISOString(),
-        monthAfterNext.toISOString()
+        monthAfterNext.toISOString(),
+        TEST_DATA.CALENDAR.calendarName
       );
       
       expect(Array.isArray(searchResults)).toBe(true);
@@ -230,7 +237,7 @@ describe("Calendar Integration Tests", () => {
     }, 20000);
 
     it("should handle search with no results", async () => {
-      const searchResults = await calendarModule.searchEvents("VeryUniqueEventTitle12345", 5);
+      const searchResults = await calendarModule.searchEvents("VeryUniqueEventTitle12345", 5, undefined, undefined, TEST_DATA.CALENDAR.calendarName);
       
       expect(Array.isArray(searchResults)).toBe(true);
       expect(searchResults.length).toBe(0);
@@ -242,12 +249,12 @@ describe("Calendar Integration Tests", () => {
   describe("openEvent", () => {
     it("should open an existing event", async () => {
       // First get some events to find one we can open
-      const existingEvents = await calendarModule.getEvents(5);
+      const existingEvents = await calendarModule.getEvents(5, undefined, undefined, TEST_DATA.CALENDAR.calendarName);
       
       if (existingEvents.length > 0 && existingEvents[0].id) {
         const eventToOpen = existingEvents[0];
         
-        const result = await calendarModule.openEvent(eventToOpen.id);
+        const result = await calendarModule.openEvent(eventToOpen.id, TEST_DATA.CALENDAR.calendarName);
         
         if (result.success) {
           console.log(`✅ Successfully opened event: ${result.message}`);
@@ -263,7 +270,7 @@ describe("Calendar Integration Tests", () => {
     }, 15000);
 
     it("should handle opening non-existent event", async () => {
-      const result = await calendarModule.openEvent("non-existent-event-id-12345");
+      const result = await calendarModule.openEvent("non-existent-event-id-12345", TEST_DATA.CALENDAR.calendarName);
       
       expect(result.success).toBe(false);
       expect(typeof result.message).toBe("string");
@@ -278,7 +285,11 @@ describe("Calendar Integration Tests", () => {
         const result = await calendarModule.createEvent(
           "Invalid Date Test",
           "invalid-start-date",
-          "invalid-end-date"
+          "invalid-end-date",
+          undefined,
+          undefined,
+          false,
+          TEST_DATA.CALENDAR.calendarName, // never write to a real calendar
         );
         
         expect(result.success).toBe(false);
@@ -300,7 +311,11 @@ describe("Calendar Integration Tests", () => {
         const result = await calendarModule.createEvent(
           "",
           tomorrow.toISOString(),
-          eventEnd.toISOString()
+          eventEnd.toISOString(),
+          undefined,
+          undefined,
+          false,
+          TEST_DATA.CALENDAR.calendarName, // never write to a real calendar
         );
         
         expect(result.success).toBe(false);
@@ -321,7 +336,11 @@ describe("Calendar Integration Tests", () => {
         const result = await calendarModule.createEvent(
           "Past Event Test",
           yesterday.toISOString(),
-          pastEventEnd.toISOString()
+          pastEventEnd.toISOString(),
+          undefined,
+          undefined,
+          false,
+          TEST_DATA.CALENDAR.calendarName, // never write to a real calendar
         );
         
         // Past events might be allowed, so check if it succeeded or failed gracefully
@@ -350,7 +369,11 @@ describe("Calendar Integration Tests", () => {
         const result = await calendarModule.createEvent(
           "Invalid Time Range Test",
           startTime.toISOString(),
-          endTime.toISOString()
+          endTime.toISOString(),
+          undefined,
+          undefined,
+          false,
+          TEST_DATA.CALENDAR.calendarName, // never write to a real calendar
         );
         
         expect(result.success).toBe(false);
@@ -362,7 +385,7 @@ describe("Calendar Integration Tests", () => {
     }, 10000);
 
     it("should handle empty search text gracefully", async () => {
-      const searchResults = await calendarModule.searchEvents("", 5);
+      const searchResults = await calendarModule.searchEvents("", 5, undefined, undefined, TEST_DATA.CALENDAR.calendarName);
       
       expect(Array.isArray(searchResults)).toBe(true);
       console.log("✅ Handled empty search text correctly");

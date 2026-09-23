@@ -1,3 +1,10 @@
+// Tests that send messages/mail, open Maps UI flows, or write outside the throwaway
+// test containers only run with APPLE_MCP_TEST_UNSAFE=1.
+export const ALLOW_UNSAFE = process.env.APPLE_MCP_TEST_UNSAFE === "1";
+
+// Every item the tests create carries this prefix so cleanup can find exactly it.
+export const TEST_PREFIX = "[mcp-e2e]";
+
 export const TEST_DATA = {
 	// Test phone number for all messaging and contact tests
 	PHONE_NUMBER: "+1 9999999999",
@@ -10,31 +17,31 @@ export const TEST_DATA = {
 
 	// Test note data
 	NOTES: {
-		folderName: "Test-Claude",
+		folderName: "[mcp-e2e] Test-Claude",
 		testNote: {
-			title: "Claude Test Note",
+			title: "[mcp-e2e] Claude Test Note",
 			body: "This is a test note created by Claude for testing purposes. Please do not delete manually.",
 		},
 		searchTestNote: {
-			title: "Search Test Note",
+			title: "[mcp-e2e] Search Test Note",
 			body: "This note contains the keyword SEARCHABLE for testing search functionality.",
 		},
 	},
 
 	// Test reminder data
 	REMINDERS: {
-		listName: "Test-Claude-Reminders",
+		listName: "[mcp-e2e] Test-Claude-Reminders",
 		testReminder: {
-			name: "Claude Test Reminder",
+			name: "[mcp-e2e] Claude Test Reminder",
 			notes: "This is a test reminder created by Claude",
 		},
 	},
 
 	// Test calendar data
 	CALENDAR: {
-		calendarName: "Test-Claude-Calendar",
+		calendarName: "[mcp-e2e] Test-Claude-Calendar",
 		testEvent: {
-			title: "Claude Test Event",
+			title: "[mcp-e2e] Claude Test Event",
 			location: "Test Location",
 			notes: "This is a test calendar event created by Claude",
 		},

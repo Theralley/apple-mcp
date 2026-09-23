@@ -1,6 +1,7 @@
 import { run } from "@jxa/run";
 import { runAppleScript } from "run-applescript";
 import { TEST_DATA } from "../fixtures/test-data.js";
+import { cleanupCalendar, cleanupNotes } from "../e2e/fixtures.js";
 
 export interface TestDataManager {
   setupTestData: () => Promise<void>;
@@ -10,9 +11,8 @@ export interface TestDataManager {
 export function createTestDataManager(): TestDataManager {
   return {
     async setupTestData() {
-      console.log("Setting up test contacts...");
-      await setupTestContact();
-      
+      // No test contact is created: Contacts tests are read-only and never add a
+      // person to the user's address book.
       console.log("Setting up test notes folder...");
       await setupTestNotesFolder();
       
@@ -32,38 +32,12 @@ export function createTestDataManager(): TestDataManager {
       
       console.log("Cleaning up test calendar events...");
       await cleanupTestCalendarEvents();
-      
-      // Note: We don't clean up contacts as they might be useful to keep
-      console.log("Leaving test contact for manual cleanup if needed");
+
     }
   };
 }
 
 // Setup functions
-async function setupTestContact(): Promise<void> {
-  try {
-    const script = `
-tell application "Contacts"
-    -- Check if test contact already exists
-    set existingContacts to (every person whose name is "${TEST_DATA.CONTACT.name}")
-    
-    if (count of existingContacts) is 0 then
-        -- Create new contact
-        set newPerson to make new person with properties {first name:"Test Contact", last name:"Claude"}
-        make new phone at end of phones of newPerson with properties {label:"iPhone", value:"${TEST_DATA.PHONE_NUMBER}"}
-        save
-        return "Created test contact"
-    else
-        return "Test contact already exists"
-    end if
-end tell`;
-    
-    await runAppleScript(script);
-  } catch (error) {
-    console.warn("Could not set up test contact:", error);
-  }
-}
-
 async function setupTestNotesFolder(): Promise<void> {
   try {
     const script = `
@@ -127,35 +101,9 @@ end tell`;
 // Cleanup functions
 async function cleanupTestNotes(): Promise<void> {
   try {
-    const script = `
-tell application "Notes"
-    set testFolders to (every folder whose name is "${TEST_DATA.NOTES.folderName}")
-    
-    repeat with testFolder in testFolders
-        try
-            -- Delete all notes in the folder first
-            set folderNotes to notes of testFolder
-            repeat with noteItem in folderNotes
-                delete noteItem
-            end repeat
-            
-            -- Then delete the folder
-            delete testFolder
-        on error
-            -- Folder deletion might fail, just clear notes
-            try
-                set folderNotes to notes of testFolder
-                repeat with noteItem in folderNotes
-                    delete noteItem
-                end repeat
-            end try
-        end try
-    end repeat
-    
-    return "Test notes cleaned up"
-end tell`;
-    
-    await runAppleScript(script);
+    // Deletes prefixed notes twice (Notes keeps deleted notes in Recently Deleted),
+    // then the test folder
+    await cleanupNotes(TEST_DATA.NOTES.folderName);
   } catch (error) {
     console.warn("Could not clean up test notes:", error);
   }
@@ -182,24 +130,7 @@ end tell`;
 
 async function cleanupTestCalendarEvents(): Promise<void> {
   try {
-    const script = `
-tell application "Calendar"
-    set testCalendars to (every calendar whose name is "${TEST_DATA.CALENDAR.calendarName}")
-    
-    repeat with testCalendar in testCalendars
-        try
-            delete testCalendar
-        on error
-            -- Calendar deletion might fail due to system restrictions
-            -- Just clear events instead
-            delete (every event of testCalendar)
-        end try
-    end repeat
-    
-    return "Test calendar cleaned up"
-end tell`;
-    
-    await runAppleScript(script);
+    await cleanupCalendar(TEST_DATA.CALENDAR.calendarName);
   } catch (error) {
     console.warn("Could not clean up test calendar:", error);
   }

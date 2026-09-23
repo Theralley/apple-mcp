@@ -35,6 +35,12 @@ The tests interact with real Apple apps and require appropriate permissions:
    - System Preferences > Security & Privacy > Privacy > Full Disk Access
    - Add Terminal.app or iTerm.app
 
+### Safety
+
+Tests that send an iMessage/SMS or email, or drive Maps UI flows (save, pin, guides),
+are skipped unless `APPLE_MCP_TEST_UNSAFE=1`. Writes go to `[mcp-e2e]`-prefixed test
+folders, lists and calendars that are deleted after the run; no contact is created.
+
 ### Test Phone Number
 
 All messaging and contact tests use: **+1 9999999999**
@@ -131,7 +137,7 @@ The test suite covers:
 
 - All Apple apps accessible
 - Test data created and cleaned up automatically
-- Real messages sent/received using test phone number
+- No messages or mail sent unless APPLE_MCP_TEST_UNSAFE=1
 - Calendar events, notes, reminders created in test folders/lists
 - Web search returning real results
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { TEST_DATA } from "../fixtures/test-data.js";
+import { ALLOW_UNSAFE, TEST_DATA } from "../fixtures/test-data.js";
 import { assertNotEmpty, assertValidDate, sleep } from "../helpers/test-utils.js";
 import remindersModule from "../../utils/reminders.js";
 
@@ -102,7 +102,7 @@ describe("Reminders Integration Tests", () => {
       console.log(`  Due: ${tomorrow.toLocaleString()}`);
     }, 10000);
 
-    it("should create a reminder in default list when list not specified", async () => {
+    it.skipIf(!ALLOW_UNSAFE)("should create a reminder in default list when list not specified", async () => {
       const reminderName = `Default List Test ${Date.now()}`;
       
       const result = await remindersModule.createReminder(

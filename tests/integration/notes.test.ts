@@ -31,7 +31,7 @@ describe("Notes Integration Tests", () => {
 
     it("should create a note with markdown formatting", async () => {
       const markdownNote = {
-        title: `Markdown Test Note ${Date.now()}`,
+        title: `[mcp-e2e] Markdown Test Note ${Date.now()}`,
         body: `# Test Header\n\nThis is a test note with **bold** text and a list:\n\n- Item 1\n- Item 2\n- Item 3\n\n[Link example](https://example.com)`
       };
       
@@ -48,7 +48,7 @@ describe("Notes Integration Tests", () => {
     it("should handle long note content", async () => {
       const longContent = "This is a very long note. ".repeat(100);
       const longNote = {
-        title: `Long Content Note ${Date.now()}`,
+        title: `[mcp-e2e] Long Content Note ${Date.now()}`,
         body: longContent
       };
       

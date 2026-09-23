@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { TEST_DATA } from "../fixtures/test-data.js";
+import { ALLOW_UNSAFE, TEST_DATA } from "../fixtures/test-data.js";
 import { assertNotEmpty, assertValidDate, sleep } from "../helpers/test-utils.js";
 import mailModule from "../../utils/mail.js";
 
@@ -183,7 +183,7 @@ describe("Mail Integration Tests", () => {
     }, 10000);
   });
 
-  describe("sendMail", () => {
+  describe.skipIf(!ALLOW_UNSAFE)("sendMail", () => {
     it("should send a test email", async () => {
       const testSubject = `${TEST_DATA.MAIL.testSubject} - ${new Date().toLocaleString()}`;
       const testBody = `${TEST_DATA.MAIL.testBody}\n\nSent at: ${new Date().toISOString()}`;
@@ -244,7 +244,7 @@ describe("Mail Integration Tests", () => {
   });
 
   describe("Error Handling", () => {
-    it("should handle invalid email address gracefully", async () => {
+    it.skipIf(!ALLOW_UNSAFE)("should handle invalid email address gracefully", async () => {
       try {
         const result = await mailModule.sendMail(
           "invalid-email-address",
