@@ -154,6 +154,48 @@ bun install
 bun run index.ts
 ```
 
+Run the checkout as an MCP server (use absolute paths):
+
+```json
+{
+  "mcpServers": {
+    "apple-mcp": {
+      "command": "bun",
+      "args": ["run", "/path/to/apple-mcp/index.ts"]
+    }
+  }
+}
+```
+
+### Permissions and timeouts
+
+- Automation: allow the host app (Terminal, iTerm, Claude) to control Contacts, Notes,
+  Reminders, Calendar, Mail and Messages (System Settings > Privacy & Security > Automation).
+- Messages history reads `~/Library/Messages/chat.db` read-only and needs Full Disk Access.
+- Reminders and Calendar reads use EventKit when the host app has Full Access (Privacy &
+  Security > Reminders / Calendars), which is fast and expands recurring events. Otherwise
+  they fall back to scripting, which for Calendar can take a minute or more; pass
+  `calendarName` to limit the scan.
+- Every Apple Event is bounded. Tune with `APPLE_MCP_TIMEOUT_MS` (default 30000),
+  `APPLE_MCP_MAIL_TIMEOUT_MS` (45000) and `APPLE_MCP_CALENDAR_TIMEOUT_MS` (90000). A slow
+  app returns a "did not respond within" error instead of hanging the request.
+
+### Tests
+
+```bash
+bun run typecheck
+bun run test:unit     # compile-only checks of the send scripts
+bun run test:e2e      # every tool over stdio against the real apps
+bun run test:skills   # skills/ frontmatter + live run of each skill's steps
+bun run test          # upstream integration suite
+```
+
+The e2e and skills runs never send messages or mail, and only write to throwaway
+`[mcp-e2e]` folders, lists and calendars that they delete afterwards. The upstream suite
+skips its sending and Maps UI tests unless `APPLE_MCP_TEST_UNSAFE=1`.
+
+See [skills/README.md](skills/README.md) for the Claude Code skills that ship with this repo.
+
 Now go forth and automate your digital life! 🚀
 
 ---
