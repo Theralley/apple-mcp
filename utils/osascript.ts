@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { withAppLock } from "./app-lock";
 
 /**
  * Bounded osascript runners.
@@ -30,6 +31,11 @@ interface RunOptions {
 }
 
 function runOsascript(args: string[], opts: RunOptions = {}): Promise<string> {
+	// Calls that name their app take that app's cross-process lock first
+	return opts.app ? withAppLock(opts.app, () => runOsascriptNow(args, opts)) : runOsascriptNow(args, opts);
+}
+
+function runOsascriptNow(args: string[], opts: RunOptions = {}): Promise<string> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const app = opts.app ?? "osascript";
 	return new Promise((resolve, reject) => {

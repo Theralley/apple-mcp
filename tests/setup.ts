@@ -1,4 +1,7 @@
-import { beforeAll, afterAll } from "bun:test";
+import { beforeAll, afterAll, setDefaultTimeout } from "bun:test";
+
+// Creating the test folder/list/calendar can take several seconds per app
+setDefaultTimeout(120_000);
 import { TEST_DATA } from "./fixtures/test-data.js";
 import { createTestDataManager } from "./helpers/test-utils.js";
 
