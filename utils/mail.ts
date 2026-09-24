@@ -1,6 +1,7 @@
 import { unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { bodyFromDisk, bodyFromRfc822 } from "./emlx.js";
 import { asString, runAppleScript, runJxa } from "./osascript.js";
 
 // Configuration
@@ -85,14 +86,11 @@ function run(argv) {
   candidates.sort((a, b) => (b.date ? b.date.getTime() : 0) - (a.date ? a.date.getTime() : 0));
   const out = candidates.slice(0, args.limit).map((c) => {
     const m = c.mailbox.messages.byId(c.id);
+    // Never read m.content(): Mail converts HTML with legacy WebKit on its main thread.
+    // Bodies are read from disk by the caller; only the raw source fallback lives here.
     let content = "";
-    if (args.withContent) {
-      try {
-        content = m.content() || "";
-        if (content.length > args.preview) content = content.slice(0, args.preview) + "...";
-      } catch (e) {
-        content = "[Content not available]";
-      }
+    if (args.sourceIds && args.sourceIds.includes(c.id)) {
+      try { content = m.source() || ""; } catch (e) { content = ""; }
     }
     return {
       id: c.id, subject: m.subject() || "No subject", sender: m.sender() || "Unknown sender",
@@ -103,16 +101,33 @@ function run(argv) {
 }`;
 
 async function queryMessages(query: MessageQuery): Promise<EmailMessage[]> {
-	return runJxa<EmailMessage[]>(
-		MESSAGE_QUERY,
-		{
-			...query,
-			limit: Math.min(Math.max(1, query.limit), CONFIG.MAX_EMAILS),
-			withContent: query.withContent ?? true,
-			preview: CONFIG.MAX_CONTENT_PREVIEW,
-		},
-		{ app: "Mail", timeoutMs: CONFIG.TIMEOUT_MS },
-	);
+	const run = (sourceIds: number[] = []) =>
+		runJxa<(EmailMessage & { id: number })[]>(
+			MESSAGE_QUERY,
+			{ ...query, limit: Math.min(Math.max(1, query.limit), CONFIG.MAX_EMAILS), sourceIds },
+			{ app: "Mail", timeoutMs: CONFIG.TIMEOUT_MS },
+		);
+	const messages = await run();
+	if (!(query.withContent ?? true)) return messages;
+
+	const preview = (text: string) =>
+		text.length > CONFIG.MAX_CONTENT_PREVIEW ? text.slice(0, CONFIG.MAX_CONTENT_PREVIEW) + "..." : text;
+	const missing: number[] = [];
+	for (const m of messages) {
+		const body = await bodyFromDisk(m.id);
+		if (body === null) missing.push(m.id);
+		else m.content = preview(body);
+	}
+	if (missing.length) {
+		// Not on disk (not downloaded yet, or no Full Disk Access): raw source, parsed here
+		const withSource = new Map((await run(missing)).map((m) => [m.id, m.content]));
+		for (const m of messages) {
+			if (!missing.includes(m.id)) continue;
+			const raw = withSource.get(m.id);
+			m.content = raw ? preview(await bodyFromRfc822(raw)) : "[Content not available]";
+		}
+	}
+	return messages;
 }
 
 /**
