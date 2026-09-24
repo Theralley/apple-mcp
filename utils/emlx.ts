@@ -83,11 +83,15 @@ export async function findEmlx(id: number): Promise<string | null> {
 }
 
 /** The RFC 822 bytes inside an .emlx: first line is the byte count, then the message, then a plist. */
-export function emlxMessageBytes(file: Uint8Array): Uint8Array {
+export function emlxMessageBytes(file: Uint8Array): Uint8Array | null {
 	const nl = file.indexOf(10);
+	if (nl < 0) return null;
 	const count = Number(new TextDecoder().decode(file.subarray(0, nl)).trim());
 	const start = nl + 1;
-	return Number.isFinite(count) && count > 0 ? file.subarray(start, start + count) : file.subarray(start);
+	if (!Number.isInteger(count) || count <= 0) return null;
+	// Fewer bytes than declared: truncated or still being written, so not usable
+	if (start + count > file.length) return null;
+	return file.subarray(start, start + count);
 }
 
 // HTML 4 Latin-1 entities (code points 160-255, in order) plus the common typographic ones
@@ -111,7 +115,9 @@ export function htmlToText(html: string): string {
 		.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, e: string) => {
 			if (e[0] === "#") {
 				const n = e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
-				return Number.isFinite(n) ? String.fromCodePoint(n) : m;
+				// Out of range or a lone surrogate would throw in fromCodePoint
+				const valid = Number.isInteger(n) && n > 0 && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff);
+				return valid ? String.fromCodePoint(n) : "\ufffd";
 			}
 			return ENTITIES[e] ?? ENTITIES[e.toLowerCase()] ?? m;
 		})
@@ -132,7 +138,9 @@ export async function bodyFromDisk(id: number): Promise<string | null> {
 	const path = await findEmlx(id);
 	if (!path) return null;
 	try {
-		const body = await bodyFromRfc822(emlxMessageBytes(new Uint8Array(await readFile(path))));
+		const bytes = emlxMessageBytes(new Uint8Array(await readFile(path)));
+		if (!bytes) return null;
+		const body = await bodyFromRfc822(bytes);
 		return body || (path.endsWith(".partial.emlx") ? null : "");
 	} catch {
 		return null;

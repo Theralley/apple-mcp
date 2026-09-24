@@ -62,7 +62,7 @@ function run(argv) {
     // Messages addressed by index cost ~1s per property on large mailboxes; by id
     // they are fast. Collect (id, date) cheaply, then read details for the winners.
     const add = (ids, dates) => ids.forEach((id, i) =>
-      candidates.push({ mailbox, id, date: dates[i], label }));
+      candidates.push({ mailbox, id, date: dates[i], label, accountName, mailboxName: names[index] }));
     if (args.mode === "latest") {
       // Mailboxes list newest first
       const ids = mailbox.messages.id().slice(0, args.limit);
@@ -87,12 +87,10 @@ function run(argv) {
   const out = candidates.slice(0, args.limit).map((c) => {
     const m = c.mailbox.messages.byId(c.id);
     // Never read m.content(): Mail converts HTML with legacy WebKit on its main thread.
-    // Bodies are read from disk by the caller; only the raw source fallback lives here.
-    let content = "";
-    if (args.sourceIds && args.sourceIds.includes(c.id)) {
-      try { content = m.source() || ""; } catch (e) { content = ""; }
-    }
+    // Bodies are read from disk by the caller (see utils/emlx.ts).
+    const content = "";
     return {
+      _account: c.accountName, _mailbox: c.mailboxName,
       id: c.id, subject: m.subject() || "No subject", sender: m.sender() || "Unknown sender",
       dateSent: c.date ? c.date.toISOString() : "", content, isRead: m.readStatus(), mailbox: c.label,
     };
@@ -100,34 +98,63 @@ function run(argv) {
   return JSON.stringify(out);
 }`;
 
+/** Raw source of specific messages, addressed exactly; no HTML rendering in Mail. */
+const SOURCE_QUERY = `
+function run(argv) {
+  const wanted = JSON.parse(argv[0]);
+  const app = Application("Mail");
+  const out = {};
+  wanted.forEach((w) => {
+    try {
+      out[w.id] = app.accounts.byName(w.account).mailboxes.byName(w.mailbox).messages.byId(w.id).source() || "";
+    } catch (e) {}
+  });
+  return JSON.stringify(out);
+}`;
+
+type QueriedMessage = EmailMessage & { id: number; _account?: string; _mailbox?: string };
+
 async function queryMessages(query: MessageQuery): Promise<EmailMessage[]> {
-	const run = (sourceIds: number[] = []) =>
-		runJxa<(EmailMessage & { id: number })[]>(
-			MESSAGE_QUERY,
-			{ ...query, limit: Math.min(Math.max(1, query.limit), CONFIG.MAX_EMAILS), sourceIds },
-			{ app: "Mail", timeoutMs: CONFIG.TIMEOUT_MS },
-		);
-	const messages = await run();
-	if (!(query.withContent ?? true)) return messages;
+	const messages = await runJxa<QueriedMessage[]>(
+		MESSAGE_QUERY,
+		{ ...query, limit: Math.min(Math.max(1, query.limit), CONFIG.MAX_EMAILS) },
+		{ app: "Mail", timeoutMs: CONFIG.TIMEOUT_MS },
+	);
+	const strip = (m: QueriedMessage): EmailMessage => {
+		const { _account, _mailbox, ...rest } = m;
+		return rest;
+	};
+	if (!(query.withContent ?? true)) return messages.map(strip);
 
 	const preview = (text: string) =>
 		text.length > CONFIG.MAX_CONTENT_PREVIEW ? text.slice(0, CONFIG.MAX_CONTENT_PREVIEW) + "..." : text;
-	const missing: number[] = [];
+	const missing: QueriedMessage[] = [];
 	for (const m of messages) {
 		const body = await bodyFromDisk(m.id);
-		if (body === null) missing.push(m.id);
+		if (body === null) missing.push(m);
 		else m.content = preview(body);
 	}
 	if (missing.length) {
-		// Not on disk (not downloaded yet, or no Full Disk Access): raw source, parsed here
-		const withSource = new Map((await run(missing)).map((m) => [m.id, m.content]));
-		for (const m of messages) {
-			if (!missing.includes(m.id)) continue;
-			const raw = withSource.get(m.id);
-			m.content = raw ? preview(await bodyFromRfc822(raw)) : "[Content not available]";
+		// Not on disk (not downloaded yet, or no Full Disk Access): fetch exactly these
+		// messages' raw source and parse it here
+		let sources: Record<string, string> = {};
+		try {
+			sources = await runJxa<Record<string, string>>(
+				SOURCE_QUERY,
+				missing.map((m) => ({ id: m.id, account: m._account, mailbox: m._mailbox })),
+				{ app: "Mail", timeoutMs: CONFIG.TIMEOUT_MS },
+			);
+		} catch {}
+		for (const m of missing) {
+			const raw = sources[String(m.id)];
+			let body = "";
+			try {
+				body = raw ? await bodyFromRfc822(raw) : "";
+			} catch {}
+			m.content = body ? preview(body) : "[Content not available]";
 		}
 	}
-	return messages;
+	return messages.map(strip);
 }
 
 /**

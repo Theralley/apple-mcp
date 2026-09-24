@@ -37,7 +37,19 @@ describe("emlx", () => {
 
 	test("message bytes stop at the declared length, before the plist", () => {
 		const bytes = emlxMessageBytes(new TextEncoder().encode(emlx("Subject: x\r\n\r\nbody")));
-		expect(new TextDecoder().decode(bytes)).toBe("Subject: x\r\n\r\nbody");
+		expect(new TextDecoder().decode(bytes!)).toBe("Subject: x\r\n\r\nbody");
+	});
+
+	test("a file shorter than its declared length is not usable", async () => {
+		expect(emlxMessageBytes(new TextEncoder().encode("1000\nSubject: x\r\n\r\nfirst half"))).toBeNull();
+		put("INBOX", 77, "");
+		const dir = join(root, "ACCT", "INBOX.mbox", "UUID", "Data", "Messages");
+		writeFileSync(join(dir, "77.emlx"), "1000\nSubject: x\r\n\r\nfirst half");
+		expect(await bodyFromDisk(77)).toBeNull();
+	});
+
+	test("invalid numeric entities do not throw", () => {
+		expect(htmlToText("a&#1114112;b&#xD800;c&#0;d")).toBe("a\ufffdb\ufffdc\ufffdd");
 	});
 
 	test("html is turned into text", () => {
